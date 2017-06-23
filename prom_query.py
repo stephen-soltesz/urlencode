@@ -4,9 +4,28 @@
 import argparse
 import csv
 import json
+import logging
 import sys
 import urllib
 import urllib2
+
+
+class DictWriter(csv.DictWriter):
+    """Write header using fields from first writerow."""
+    
+    def __init__(self, output, with_header):
+        self._output = output
+        self._write_header = with_header
+        self._csv = None
+
+    def writerow(self, row):
+        """Writes the row."""
+        if self._csv is None:
+            self._csv = csv.DictWriter(self._output, sorted(row.keys()))
+        if self._write_header:
+            self._csv.writeheader()
+            self._write_header = False
+        self._csv.writerow(row)
 
 
 def parse_args(args):
@@ -20,6 +39,9 @@ def parse_args(args):
     parser.add_argument(
         '--label', default='',
         help='Lable to extract from query results.')
+    parser.add_argument(
+        '--header', default=False, action='store_true',
+        help='Write the header.')
     return parser.parse_args(args)
 
 
@@ -33,20 +55,37 @@ def query(server, query):
 
 def main():
     args = parse_args(sys.argv[1:])
-    results = query(args.server, args.query)
-    if results['status'] == "success":
-        output = csv.DictWriter(sys.stdout, fieldnames=results['data']['result'][0]['metric'].keys())
-        output.writeheader()
-        for result in results['data']['result']:
-            if args.label and args.label in result['metric']:
-                print result['metric'][args.label]
-            else:
-                output.writerow(result['metric'])
+    response = query(args.server, args.query)
+    if 'status' not in response:
+        logging.error('Results have no "status": %s', response)
+        sys.exit(1)
 
-    elif results['status'] == "error":
-        print results
-    else:
-        print 'error'
+    if response['status'] not in ['success', 'error']:
+        logging.error('Results have unsupported "status": %s', response)
+        sys.exit(1)
+
+    if response['status'] == 'error':
+        print response
+        sys.exit(1)
+
+    # Response status is success.
+    output = DictWriter(sys.stdout, args.header)
+    if 'data' not in response:
+        logging.error('Results are missing "data": %s', response)
+        sys.exit(1)
+
+    if 'result' not in response['data']:
+        logging.error('Results are missing "data->result": %s', response)
+        sys.exit(1)
+
+    results = response['data']['result']
+    for result in [result for result in results if 'metric' in result]:
+        metrics = result['metric']
+        if args.label and args.label in metrics:
+            output.writerow({args.label: metrics[args.label]})
+        else:
+            output.writerow(metrics)
+
 
 
 if __name__ == '__main__':  # pragma: no cover
